@@ -173,3 +173,12 @@ func TestMapName(t *testing.T) {
 		t.Errorf("device name = %q", d.Name)
 	}
 }
+
+func TestPortConnectedOnlyWhenLinkStatusOne(t *testing.T) {
+	for code, want := range map[int32]bool{0: false, 1: true, 2: false} {
+		p := mapPort(switchpkg.OswPortsSettingCountersVO{PortStatus: &switchpkg.OswPortStatusVO{LinkStatus: ptr(code)}})
+		if p.Connected == nil || *p.Connected != want {
+			t.Errorf("LinkStatus %d: got %v, want %v", code, p.Connected, want)
+		}
+	}
+}

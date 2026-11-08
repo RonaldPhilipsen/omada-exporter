@@ -105,7 +105,7 @@ func mapPort(p switchpkg.OswPortsSettingCountersVO) snapshot.Port {
 			}
 		}
 		if st.LinkStatus != nil {
-			c := *st.LinkStatus != 0
+			c := *st.LinkStatus == 1
 			out.Connected = &c
 		}
 		out.PoEWatts = st.PoePower
