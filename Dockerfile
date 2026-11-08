@@ -24,3 +24,14 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/omada-exporter /omada-exporter
 
 ENTRYPOINT ["/omada-exporter"]
+
+# OCI image labels. Keep this block last so that changed values only rebuild this step.
+ARG VERSION=0.1.0
+ARG GIT_SHA=unknown
+LABEL \
+    org.opencontainers.image.title="omada-exporter" \
+    org.opencontainers.image.description="OpenTelemetry metrics exporter for TP-Link Omada controllers" \
+    org.opencontainers.image.url="https://github.com/RonaldPhilipsen/omada-exporter" \
+    org.opencontainers.image.source="https://github.com/RonaldPhilipsen/omada-exporter" \
+    org.opencontainers.image.version="${VERSION}" \
+    org.opencontainers.image.revision="${GIT_SHA}"
