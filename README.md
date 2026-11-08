@@ -27,7 +27,7 @@ The poll intervals use the Go duration format. If a value is not valid, the serv
 
 ## OTLP export
 
-The service reads the standard OpenTelemetry environment variables. It sends no metrics until you set an endpoint that matches your receiver.
+The service reads the standard OpenTelemetry environment variables. The default endpoint is `http://localhost:4318`. If your receiver runs at another address, set the endpoint.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -42,7 +42,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://prometheus:9090/api/v1/otlp
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 ```
 
-The resource carries `service.name=omada-exporter` and `service.version`. Every series except the controller series carries the attribute `omada.site.name`.
+The resource carries `service.name=omada-exporter` and `service.version`. Every series except the `omada.controller.*` and `omada.exporter.*` series carries the attribute `omada.site.name`.
 
 ## Metrics
 
@@ -75,7 +75,7 @@ The table lists each metric with its OpenTelemetry name and its name in Promethe
 The attribute groups have these members:
 
 - Device: `device.mac`, `device.name`, `device.model`, `device.type`
-- Port: `switch.mac`, `switch.name`, `port.number`, `port.name`
+- Port: `switch.mac`, `switch.name`, `port.number`, `port.name`. Ports of a stacked switch also carry `port.unit`, the stack unit number.
 - Client: `client.mac`, `client.name`, `client.connection` (`wired` or `wireless`). Wireless clients also carry `client.ssid` and `client.ap.name`.
 
 Prometheus replaces each dot in an attribute name with the `_` character. Examples are `omada_site_name` and `device_name`.
@@ -88,7 +88,7 @@ Note these points about the values:
 - If a field is absent from a controller response, the service reports no value. It does not report zero.
 - `omada.device.upgrade.available` has no value until the first firmware check for the device finishes.
 - Counters carry the value from the controller. If a client reconnects, the controller value can decrease, and the backend treats the decrease as a counter reset.
-- `omada.exporter.scrape.errors` appears after the first scrape error. The name in the table follows the translation rules and is not tested against a live receiver.
+- `omada.exporter.scrape.errors` appears after the first scrape error. We tested the other names on Prometheus with a fake Omada server. We did not test this name, so it follows the translation rules only.
 
 ## Dashboard
 
@@ -105,7 +105,7 @@ If you use another translation strategy, the metric names differ and the dashboa
 
 ## Running the service
 
-Run the image from GHCR. The example sends metrics to a Prometheus server on the same host.
+Run the image from GHCR. The example sends metrics to a Prometheus server. The name `prometheus` must resolve from inside the container, for example when both containers share a Docker network.
 
 ```bash
 docker run --rm \
