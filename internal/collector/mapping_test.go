@@ -13,9 +13,11 @@ func ptr[T any](v T) *T { return &v }
 
 func TestParseUptime(t *testing.T) {
 	ok := map[string]int64{
-		"1 day 2 hours":       93600,
-		"3 days":              259200,
-		"5 minutes 7 seconds": 307,
+		"1 day 2 hours":        93600,
+		"3 days":               259200,
+		"5 minutes 7 seconds":  307,
+		"10day(s) 23h 51m 36s": 10*86400 + 23*3600 + 51*60 + 36,
+		"1h 14m 11s":           4451,
 	}
 	for in, want := range ok {
 		got, valid := parseUptime(in)
@@ -23,7 +25,7 @@ func TestParseUptime(t *testing.T) {
 			t.Errorf("parseUptime(%q) = %d, %v; want %d, true", in, got, valid, want)
 		}
 	}
-	for _, in := range []string{"", "soon", "3 fortnights"} {
+	for _, in := range []string{"", "soon", "3 fortnights", "12", "1h soon"} {
 		if _, valid := parseUptime(in); valid {
 			t.Errorf("parseUptime(%q) valid, want false", in)
 		}
@@ -143,12 +145,12 @@ func TestMapClientWiredWireless(t *testing.T) {
 
 func TestMapControllerStorage(t *testing.T) {
 	c := mapController(user.ControllerStatus{
-		UpTime: ptr(int64(100)),
+		UpTime: ptr(int64(975468000)),
 		HwcStorage: &[]user.DiskCondition{
 			{Name: ptr("disk"), TotalStorage: ptr(2.5), UsedStorage: ptr(1.0)},
 		},
 	})
-	if c.UptimeSeconds == nil || *c.UptimeSeconds != 100 {
+	if c.UptimeSeconds == nil || *c.UptimeSeconds != 975468 {
 		t.Errorf("uptime = %v", c.UptimeSeconds)
 	}
 	if len(c.Storage) != 1 || c.Storage[0].Name != "disk" ||

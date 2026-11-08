@@ -460,7 +460,7 @@
             "type": "prometheus",
             "uid": "${Datasource}"
           },
-          "expr": "omada_device_uptime_seconds{omada_site_name=\"$Site\",device_name=~\"$Device\"}",
+          "expr": "max by (device_name) (omada_device_uptime_seconds{omada_site_name=\"$Site\",device_name=~\"$Device\"})",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -471,7 +471,7 @@
             "type": "prometheus",
             "uid": "${Datasource}"
           },
-          "expr": "omada_device_cpu_utilization_ratio{omada_site_name=\"$Site\",device_name=~\"$Device\"}",
+          "expr": "max by (device_name) (omada_device_cpu_utilization_ratio{omada_site_name=\"$Site\",device_name=~\"$Device\"})",
           "legendFormat": "",
           "refId": "B",
           "instant": true,
@@ -482,7 +482,7 @@
             "type": "prometheus",
             "uid": "${Datasource}"
           },
-          "expr": "omada_device_memory_utilization_ratio{omada_site_name=\"$Site\",device_name=~\"$Device\"}",
+          "expr": "max by (device_name) (omada_device_memory_utilization_ratio{omada_site_name=\"$Site\",device_name=~\"$Device\"})",
           "legendFormat": "",
           "refId": "C",
           "instant": true,
@@ -493,7 +493,7 @@
             "type": "prometheus",
             "uid": "${Datasource}"
           },
-          "expr": "omada_device_upgrade_available_ratio{omada_site_name=\"$Site\",device_name=~\"$Device\"}",
+          "expr": "max by (device_name) (omada_device_upgrade_available_ratio{omada_site_name=\"$Site\",device_name=~\"$Device\"})",
           "legendFormat": "",
           "refId": "D",
           "instant": true,
@@ -504,18 +504,22 @@
         {
           "id": "joinByField",
           "options": {
-            "byField": "device_mac",
+            "byField": "device_name",
             "mode": "outer"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "pattern": "^(device_name|Value #[A-D])$"
+            }
           }
         },
         {
           "id": "organize",
           "options": {
-            "excludeByName": {
-              "Time": true
-            },
             "renameByName": {
-              "device_mac": "MAC",
               "device_name": "Device",
               "Value #A": "Uptime",
               "Value #B": "CPU",

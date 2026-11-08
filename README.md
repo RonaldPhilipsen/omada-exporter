@@ -83,7 +83,7 @@ Prometheus replaces each dot in an attribute name with the `_` character. Exampl
 Note these points about the values:
 
 - If the controller does not report `hwcStorage`, the `omada.controller.storage.*` series do not exist.
-- The Omada API reports device uptime as text, for example `1 day 2 hours`. The service parses the text, so `omada.device.uptime` has coarse resolution.
+- The Omada API reports device uptime as text, for example `10day(s) 23h 51m 36s`. The service parses the text, so `omada.device.uptime` has coarse resolution.
 - The service treats the storage values from the controller as gigabytes and converts them to bytes.
 - If a field is absent from a controller response, the service reports no value. It does not report zero.
 - `omada.device.upgrade.available` has no value until the first firmware check for the device finishes.
