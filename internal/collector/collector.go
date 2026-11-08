@@ -39,7 +39,12 @@ type Options struct {
 	FirmwareInterval time.Duration
 	// FirmwareDelay is the wait between two firmware calls.
 	FirmwareDelay time.Duration
+	// CallTimeout bounds each API call. Zero means 30 seconds.
+	CallTimeout time.Duration
 }
+
+// defaultCallTimeout is the CallTimeout used when Options leaves it zero.
+const defaultCallTimeout = 30 * time.Second
 
 type siteState struct {
 	id, name string
@@ -58,6 +63,9 @@ type Collector struct {
 	snap atomic.Pointer[snapshot.Snapshot]
 
 	pollMu sync.Mutex // serialises PollOnce calls
+	fwMu   sync.Mutex // serialises firmware passes
+	// fwFirstDone is set once a firmware pass has run against a snapshot.
+	fwFirstDone atomic.Bool
 
 	mu         sync.Mutex // guards the fields below
 	controller *snapshot.Controller
@@ -79,7 +87,22 @@ func New(api API, rec Recorder, log *slog.Logger, opts Options) *Collector {
 // The returned value is never modified.
 func (c *Collector) Snapshot() *snapshot.Snapshot { return c.snap.Load() }
 
-func (c *Collector) fail(section string, err error, attrs ...any) {
+// timed runs fn with a context that ends after the call timeout.
+func timed[T any](c *Collector, ctx context.Context, fn func(context.Context) (T, error)) (T, error) {
+	d := c.opts.CallTimeout
+	if d <= 0 {
+		d = defaultCallTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	return fn(ctx)
+}
+
+// fail records a failed section. It ignores errors caused by shutdown.
+func (c *Collector) fail(ctx context.Context, section string, err error, attrs ...any) {
+	if ctx.Err() != nil {
+		return
+	}
 	c.rec.PollError(section)
 	c.log.Error("poll failed", append([]any{"section", section, "error", err}, attrs...)...)
 }
@@ -92,16 +115,16 @@ func (c *Collector) PollOnce(ctx context.Context) {
 	defer func() { c.rec.PollDuration(time.Since(start)) }()
 
 	var ctrl *snapshot.Controller
-	if st, err := c.api.ControllerStatus(ctx); err != nil {
-		c.fail("controller", err)
+	if st, err := timed(c, ctx, c.api.ControllerStatus); err != nil {
+		c.fail(ctx, "controller", err)
 	} else {
 		m := mapController(st)
 		ctrl = &m
 	}
 
-	list, err := c.api.Sites(ctx)
+	list, err := timed(c, ctx, c.api.Sites)
 	if err != nil {
-		c.fail("sites", err)
+		c.fail(ctx, "sites", err)
 		c.mu.Lock()
 		if ctrl != nil {
 			c.controller = ctrl
@@ -143,24 +166,29 @@ func (c *Collector) PollOnce(ctx context.Context) {
 // pollSite refreshes each section of st; a failed section keeps its old data.
 func (c *Collector) pollSite(ctx context.Context, st *siteState) {
 	attrs := []any{"site", st.id}
-	if devs, err := c.api.Devices(ctx, st.id); err != nil {
-		c.fail("devices", err, attrs...)
+	if devs, err := timed(c, ctx, func(ctx context.Context) ([]device.DeviceInfo, error) { return c.api.Devices(ctx, st.id) }); err != nil {
+		c.fail(ctx, "devices", err, attrs...)
 	} else {
 		st.devices = make([]snapshot.Device, len(devs))
 		for i, d := range devs {
 			st.devices[i] = mapDevice(d)
 		}
 	}
-	if ports, err := c.api.Ports(ctx, st.id); err != nil {
-		c.fail("ports", err, attrs...)
+	if ports, err := timed(c, ctx, func(ctx context.Context) ([]switchpkg.OswPortsSettingCountersVO, error) {
+		return c.api.Ports(ctx, st.id)
+	}); err != nil {
+		c.fail(ctx, "ports", err, attrs...)
 	} else {
-		st.ports = make([]snapshot.Port, len(ports))
-		for i, p := range ports {
-			st.ports[i] = mapPort(p)
+		st.ports = make([]snapshot.Port, 0, len(ports))
+		for _, p := range ports {
+			if p.Port == nil {
+				continue
+			}
+			st.ports = append(st.ports, mapPort(p))
 		}
 	}
-	if cls, err := c.api.Clients(ctx, st.id); err != nil {
-		c.fail("clients", err, attrs...)
+	if cls, err := timed(c, ctx, func(ctx context.Context) ([]client.OpenApiClientInfo, error) { return c.api.Clients(ctx, st.id) }); err != nil {
+		c.fail(ctx, "clients", err, attrs...)
 	} else {
 		st.clients = make([]snapshot.Client, len(cls))
 		for i, cl := range cls {
@@ -205,11 +233,21 @@ func (c *Collector) publishLocked() {
 // PollFirmware fetches firmware info for every device of the current
 // snapshot, waiting FirmwareDelay between calls. It does nothing before the
 // first successful poll.
-func (c *Collector) PollFirmware(ctx context.Context) {
+func (c *Collector) PollFirmware(ctx context.Context) { c.pollFirmware(ctx, false) }
+
+// pollFirmware runs one firmware pass. With onlyFirst it does nothing once a
+// first pass has run, so a retry from the main loop never repeats the pass.
+func (c *Collector) pollFirmware(ctx context.Context, onlyFirst bool) {
+	c.fwMu.Lock()
+	defer c.fwMu.Unlock()
+	if onlyFirst && c.fwFirstDone.Load() {
+		return
+	}
 	snap := c.Snapshot()
 	if snap == nil {
 		return
 	}
+	c.fwFirstDone.Store(true)
 	type target struct{ site, mac string }
 	var targets []target
 	for _, s := range snap.Sites {
@@ -224,9 +262,11 @@ func (c *Collector) PollFirmware(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		fw, err := c.api.Firmware(ctx, t.site, t.mac)
+		fw, err := timed(c, ctx, func(ctx context.Context) (device.DeviceFirmwareInfo, error) {
+			return c.api.Firmware(ctx, t.site, t.mac)
+		})
 		if err != nil {
-			c.fail("firmware", err, "site", t.site, "mac", t.mac)
+			c.fail(ctx, "firmware", err, "site", t.site, "mac", t.mac)
 			continue
 		}
 		u := upgradeAvailable(fw)
@@ -278,7 +318,14 @@ func (c *Collector) Run(ctx context.Context) error {
 			}
 		}()
 	}
-	loop(c.opts.PollInterval, false, c.PollOnce)
+	// Until the first firmware pass has run, each main poll retries it, so a
+	// failed first poll does not delay firmware data by a full interval.
+	loop(c.opts.PollInterval, false, func(ctx context.Context) {
+		c.PollOnce(ctx)
+		if c.opts.FirmwareInterval > 0 && !c.fwFirstDone.Load() && ctx.Err() == nil {
+			c.pollFirmware(ctx, true)
+		}
+	})
 	loop(c.opts.FirmwareInterval, true, c.PollFirmware)
 	wg.Wait()
 	return nil

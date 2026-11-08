@@ -98,6 +98,10 @@ func mapPort(p switchpkg.OswPortsSettingCountersVO) snapshot.Port {
 	if p.Port != nil {
 		out.Number = int64(*p.Port)
 	}
+	if p.Unit != nil {
+		u := int64(*p.Unit)
+		out.Unit = &u
+	}
 	if st := p.PortStatus; st != nil {
 		if st.LinkSpeed != nil {
 			if v, ok := speedMbps[*st.LinkSpeed]; ok {

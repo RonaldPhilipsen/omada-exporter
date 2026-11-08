@@ -134,6 +134,9 @@ func Register(m metric.Meter, src func() *snapshot.Snapshot, clientMetrics bool)
 					attribute.String("switch.name", p.SwitchName),
 					attribute.Int64("port.number", p.Number),
 					attribute.String("port.name", p.Name)}
+				if p.Unit != nil {
+					base = append(base, attribute.Int64("port.unit", *p.Unit))
+				}
 				a := metric.WithAttributes(base...)
 				tx, rx := dirAttrs(base)
 				obsI(o, portIO, p.TxBytes, tx)

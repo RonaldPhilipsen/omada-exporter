@@ -67,6 +67,11 @@ func TestFromEnvInvalid(t *testing.T) {
 		{"OMADA_POLL_INTERVAL", "-1s"},
 		{"OMADA_FIRMWARE_POLL_INTERVAL", "0s"},
 		{"OMADA_CLIENT_METRICS", "maybe"},
+		{"OMADA_BASE_URL", "omada.local:8043"},
+		{"OMADA_BASE_URL", "not a url"},
+		{"OMADA_BASE_URL", "ftp://x"},
+		{"OMADA_BASE_URL", "   "},
+		{"OMADA_CLIENT_ID", "  \t"},
 	}
 	for _, c := range cases {
 		t.Run(c.name+"="+c.value, func(t *testing.T) {
@@ -98,5 +103,31 @@ func TestFromEnvErrorHidesSecret(t *testing.T) {
 	_, err = FromEnv(getter(env))
 	if err == nil || strings.Contains(err.Error(), secret) {
 		t.Errorf("error missing or leaks the secret: %v", err)
+	}
+}
+
+func TestFromEnvTrimsRequired(t *testing.T) {
+	env := baseEnv()
+	env["OMADA_BASE_URL"] = " https://omada.example:8043 \n"
+	env["OMADA_CLIENT_ID"] = " client "
+	cfg, err := FromEnv(getter(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseURL != "https://omada.example:8043" || cfg.ClientID != "client" {
+		t.Errorf("values not trimmed: %+v", cfg)
+	}
+}
+
+func TestFromEnvBooleansHonored(t *testing.T) {
+	env := baseEnv()
+	env["OMADA_CLIENT_METRICS"] = "false"
+	env["OMADA_INSECURE_TLS"] = "true"
+	cfg, err := FromEnv(getter(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClientMetrics || !cfg.InsecureTLS {
+		t.Errorf("ClientMetrics=%v InsecureTLS=%v", cfg.ClientMetrics, cfg.InsecureTLS)
 	}
 }

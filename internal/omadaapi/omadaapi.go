@@ -50,7 +50,8 @@ func New(cfg config.Config) (*Client, error) {
 
 // call performs the request, closes the body, requires a 2xx status, decodes
 // the JSON envelope into T and returns an APIError for a non-zero errorCode.
-// codeOf and resultOf read the generated envelope fields.
+// An absent errorCode is an error too. codeOf reads the errorCode and msg
+// fields of the generated envelope.
 func call[T any](do func() (*http.Response, error), codeOf func(*T) (*int32, *string)) (*T, error) {
 	resp, err := do()
 	if err != nil {
@@ -68,7 +69,11 @@ func call[T any](do func() (*http.Response, error), codeOf func(*T) (*int32, *st
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	if code, msg := codeOf(&env); code != nil && *code != 0 {
+	code, msg := codeOf(&env)
+	if code == nil {
+		return nil, fmt.Errorf("omada: response has no errorCode")
+	}
+	if *code != 0 {
 		m := ""
 		if msg != nil {
 			m = *msg
@@ -112,8 +117,11 @@ func (c *Client) Sites(ctx context.Context) ([]site.SiteSummaryInfo, error) {
 		env, err := call(func() (*http.Response, error) {
 			return c.cl.Site().GetSiteList(ctx, c.omadacID, &site.GetSiteListParams{Page: int32(page), PageSize: int32(size)})
 		}, func(e *site.OperationResponseGridVOSiteSummaryInfo) (*int32, *string) { return e.ErrorCode, e.Msg })
-		if err != nil || env.Result == nil {
+		if err != nil {
 			return cloud.Page[site.SiteSummaryInfo]{}, err
+		}
+		if env.Result == nil {
+			return cloud.Page[site.SiteSummaryInfo]{}, fmt.Errorf("omada: list response has no result")
 		}
 		return cloud.Page[site.SiteSummaryInfo]{Rows: deref(env.Result.Data), TotalRows: total(env.Result.TotalRows)}, nil
 	}, pageSize, maxRows)
@@ -125,8 +133,11 @@ func (c *Client) Devices(ctx context.Context, siteID string) ([]device.DeviceInf
 		env, err := call(func() (*http.Response, error) {
 			return c.cl.Devices().GetDeviceList(ctx, c.omadacID, siteID, &device.GetDeviceListParams{Page: int32(page), PageSize: int32(size)})
 		}, func(e *device.OperationResponseGridVODeviceInfo) (*int32, *string) { return e.ErrorCode, e.Msg })
-		if err != nil || env.Result == nil {
+		if err != nil {
 			return cloud.Page[device.DeviceInfo]{}, err
+		}
+		if env.Result == nil {
+			return cloud.Page[device.DeviceInfo]{}, fmt.Errorf("omada: list response has no result")
 		}
 		return cloud.Page[device.DeviceInfo]{Rows: deref(env.Result.Data), TotalRows: total(env.Result.TotalRows)}, nil
 	}, pageSize, maxRows)
@@ -140,8 +151,11 @@ func (c *Client) Ports(ctx context.Context, siteID string) ([]switchpkg.OswPorts
 		}, func(e *switchpkg.OperationResponseGridVOOswPortsSettingCountersVO) (*int32, *string) {
 			return e.ErrorCode, e.Msg
 		})
-		if err != nil || env.Result == nil {
+		if err != nil {
 			return cloud.Page[switchpkg.OswPortsSettingCountersVO]{}, err
+		}
+		if env.Result == nil {
+			return cloud.Page[switchpkg.OswPortsSettingCountersVO]{}, fmt.Errorf("omada: list response has no result")
 		}
 		return cloud.Page[switchpkg.OswPortsSettingCountersVO]{Rows: deref(env.Result.Data), TotalRows: total(env.Result.TotalRows)}, nil
 	}, pageSize, maxRows)
@@ -155,8 +169,11 @@ func (c *Client) Clients(ctx context.Context, siteID string) ([]client.OpenApiCl
 		}, func(e *client.OperationResponseClientGridVOOpenApiClientInfo) (*int32, *string) {
 			return e.ErrorCode, e.Msg
 		})
-		if err != nil || env.Result == nil {
+		if err != nil {
 			return cloud.Page[client.OpenApiClientInfo]{}, err
+		}
+		if env.Result == nil {
+			return cloud.Page[client.OpenApiClientInfo]{}, fmt.Errorf("omada: list response has no result")
 		}
 		return cloud.Page[client.OpenApiClientInfo]{Rows: deref(env.Result.Data), TotalRows: total(env.Result.TotalRows)}, nil
 	}, pageSize, maxRows)

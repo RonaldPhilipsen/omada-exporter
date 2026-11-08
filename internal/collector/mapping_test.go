@@ -182,3 +182,13 @@ func TestPortConnectedOnlyWhenLinkStatusOne(t *testing.T) {
 		}
 	}
 }
+
+func TestMapPortUnit(t *testing.T) {
+	p := mapPort(switchpkg.OswPortsSettingCountersVO{Port: ptr(int32(3)), Unit: ptr(int32(2))})
+	if p.Unit == nil || *p.Unit != 2 {
+		t.Errorf("Unit = %v", p.Unit)
+	}
+	if q := mapPort(switchpkg.OswPortsSettingCountersVO{Port: ptr(int32(3))}); q.Unit != nil {
+		t.Errorf("Unit = %v, want nil", *q.Unit)
+	}
+}

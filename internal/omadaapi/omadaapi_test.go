@@ -140,3 +140,39 @@ func TestSecretNotInErrors(t *testing.T) {
 		t.Fatalf("secret leaked: %v", err)
 	}
 }
+
+func TestListMethodsRejectMissingResult(t *testing.T) {
+	ctx := context.Background()
+	calls := map[string]func(c *Client) error{
+		"sites":   func(c *Client) error { _, err := c.Sites(ctx); return err },
+		"devices": func(c *Client) error { _, err := c.Devices(ctx, "s1"); return err },
+		"ports":   func(c *Client) error { _, err := c.Ports(ctx, "s1"); return err },
+		"clients": func(c *Client) error { _, err := c.Clients(ctx, "s1"); return err },
+	}
+	bodies := map[string]string{
+		"empty object": `{}`,
+		"null result":  `{"errorCode":0,"result":null}`,
+	}
+	for name, do := range calls {
+		for bname, body := range bodies {
+			t.Run(name+"/"+bname, func(t *testing.T) {
+				c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+					fmt.Fprint(w, body)
+				})
+				if err := do(c); err == nil {
+					t.Fatal("want error, got nil")
+				}
+			})
+		}
+	}
+}
+
+func TestEmptyResultIsValid(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"errorCode":0,"result":{"totalRows":0,"data":[]}}`)
+	})
+	got, err := c.Devices(context.Background(), "s1")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("want empty and nil error, got %v, %v", got, err)
+	}
+}

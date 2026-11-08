@@ -9,6 +9,9 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
+// cardinalityLimit caps the series per instrument; a large site stays below it.
+const cardinalityLimit = 20000
+
 // NewProvider builds a MeterProvider whose reader and exporter come from the
 // standard OTEL_* environment variables.
 func NewProvider(ctx context.Context, version string) (*sdkmetric.MeterProvider, error) {
@@ -23,5 +26,5 @@ func NewProvider(ctx context.Context, version string) (*sdkmetric.MeterProvider,
 	if err != nil {
 		return nil, err
 	}
-	return sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader), sdkmetric.WithResource(res)), nil
+	return sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader), sdkmetric.WithResource(res), sdkmetric.WithCardinalityLimit(cardinalityLimit)), nil
 }

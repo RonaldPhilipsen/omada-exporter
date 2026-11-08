@@ -36,12 +36,14 @@ type Device struct {
 type Port struct {
 	SwitchMAC, SwitchName, Name string
 	Number                      int64
-	RxBytes, TxBytes            *int64
-	RxPackets, TxPackets        *int64
-	RxErrors, TxErrors          *int64
-	SpeedMbps                   *int64
-	Connected                   *bool
-	PoEWatts                    *float64
+	// Unit is the stack unit; nil when the switch is not stacked.
+	Unit                 *int64
+	RxBytes, TxBytes     *int64
+	RxPackets, TxPackets *int64
+	RxErrors, TxErrors   *int64
+	SpeedMbps            *int64
+	Connected            *bool
+	PoEWatts             *float64
 }
 
 type Client struct {

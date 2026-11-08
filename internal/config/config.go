@@ -3,7 +3,9 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -34,11 +36,15 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		{"OMADA_CLIENT_SECRET", &cfg.ClientSecret},
 	}
 	for _, r := range required {
-		v := getenv(r.name)
+		v := strings.TrimSpace(getenv(r.name))
 		if v == "" {
 			return Config{}, fmt.Errorf("%s is required", r.name)
 		}
 		*r.dst = v
+	}
+
+	if err := checkBaseURL(cfg.BaseURL); err != nil {
+		return Config{}, err
 	}
 
 	var err error
@@ -82,4 +88,12 @@ func boolean(getenv func(string) string, name string, def bool) (bool, error) {
 		return false, fmt.Errorf("%s is not a valid boolean", name)
 	}
 	return b, nil
+}
+
+func checkBaseURL(v string) error {
+	u, err := url.Parse(v)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("OMADA_BASE_URL must be an http or https URL with a host")
+	}
+	return nil
 }

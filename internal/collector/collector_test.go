@@ -30,6 +30,8 @@ type fakeAPI struct {
 	fwCalls  int
 	fwCalled chan struct{}
 	sitesFn  func(ctx context.Context) ([]site.SiteSummaryInfo, error)
+	// blockDevices makes Devices wait for its context to end.
+	blockDevices bool
 }
 
 func newFake() *fakeAPI {
@@ -70,6 +72,10 @@ func (f *fakeAPI) Sites(ctx context.Context) ([]site.SiteSummaryInfo, error) {
 }
 
 func (f *fakeAPI) Devices(ctx context.Context, id string) ([]device.DeviceInfo, error) {
+	if f.blockDevices {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.err("devices"); err != nil {
@@ -346,4 +352,65 @@ func TestRunShutdownDuringFirmwareDelay(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Run did not return within 1s")
 	}
+}
+
+func TestCallTimeout(t *testing.T) {
+	f, r := oneSite(), newRec()
+	f.blockDevices = true
+	c := newC(f, r, Options{CallTimeout: 20 * time.Millisecond})
+	done := make(chan struct{})
+	go func() { c.PollOnce(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("poll did not return")
+	}
+	if r.count("devices") != 1 {
+		t.Fatalf("errs = %v", r.errs)
+	}
+	if c.Snapshot() == nil {
+		t.Fatal("snapshot not published")
+	}
+}
+
+func TestCancelledPollRecordsNoError(t *testing.T) {
+	f, r := oneSite(), newRec()
+	f.blockDevices = true
+	c := newC(f, r, Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.PollOnce(ctx)
+	if r.total() != 0 {
+		t.Fatalf("errs = %v", r.errs)
+	}
+}
+
+func TestPortWithoutNumberSkipped(t *testing.T) {
+	f := oneSite()
+	f.ports["s1"] = append(f.ports["s1"], switchpkg.OswPortsSettingCountersVO{SwitchMac: sp("aa")})
+	c := newC(f, newRec(), Options{})
+	c.PollOnce(context.Background())
+	if n := len(c.Snapshot().Sites[0].Ports); n != 1 {
+		t.Fatalf("ports = %d, want 1", n)
+	}
+}
+
+func TestFirmwareRetriedOnMainPollUntilFirstPass(t *testing.T) {
+	f := oneSite()
+	f.fw["aa"] = fwNew("2.0")
+	f.fwCalled = make(chan struct{}, 8)
+	f.fail["sites"] = true // first poll yields no snapshot
+	c := newC(f, newRec(), Options{PollInterval: 10 * time.Millisecond, FirmwareInterval: time.Hour})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+	f.set(func() { f.fail["sites"] = false })
+	select {
+	case <-f.fwCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("firmware not polled after first snapshot")
+	}
+	cancel()
+	<-done
 }

@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"github.com/RonaldPhilipsen/omada-exporter/internal/collector"
 	"github.com/RonaldPhilipsen/omada-exporter/internal/config"
 	"github.com/RonaldPhilipsen/omada-exporter/internal/metrics"
@@ -32,6 +34,10 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logger.Warn("opentelemetry error", "error", err)
+	}))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

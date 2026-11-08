@@ -329,3 +329,29 @@ func TestRecorder(t *testing.T) {
 		t.Errorf("duration = %v", d)
 	}
 }
+
+func TestStackedPortsAreDistinctSeries(t *testing.T) {
+	snap := fixture()
+	snap.Sites[0].Ports = []snapshot.Port{
+		{SwitchMAC: "bb", Name: "P", Number: 1, Unit: ptr(int64(1)), Connected: ptr(true)},
+		{SwitchMAC: "bb", Name: "P", Number: 1, Unit: ptr(int64(2)), Connected: ptr(true)},
+		{SwitchMAC: "bb", Name: "P", Number: 2, Connected: ptr(true)},
+	}
+	got, _, _ := collect(t, snap, true)
+	ps := points(got["omada.switch.port.connected"])
+	if len(ps) != 3 {
+		t.Fatalf("series = %d, want 3", len(ps))
+	}
+	units := 0
+	for _, p := range ps {
+		if u, ok := p.attrs.Value("port.unit"); ok {
+			units++
+			if u.Type() != attribute.INT64 {
+				t.Errorf("port.unit type = %v", u.Type())
+			}
+		}
+	}
+	if units != 2 {
+		t.Errorf("series with port.unit = %d, want 2", units)
+	}
+}
