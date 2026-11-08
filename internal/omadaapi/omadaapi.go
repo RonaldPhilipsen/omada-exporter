@@ -48,11 +48,23 @@ func New(cfg config.Config) (*Client, error) {
 	return &Client{cl: cl, omadacID: cfg.OmadacID}, nil
 }
 
-// call performs the request, closes the body, requires a 2xx status, decodes
-// the JSON envelope into T and returns an APIError for a non-zero errorCode.
-// An absent errorCode is an error too. codeOf reads the errorCode and msg
-// fields of the generated envelope.
-func call[T any](do func() (*http.Response, error), codeOf func(*T) (*int32, *string)) (*T, error) {
+// envelope is the wrapper around every Omada response.
+type envelope[T any] struct {
+	ErrorCode *int32  `json:"errorCode"`
+	Msg       *string `json:"msg"`
+	Result    *T      `json:"result"`
+}
+
+// grid is the result of a paged operation.
+type grid[Row any] struct {
+	TotalRows int64 `json:"totalRows"`
+	Data      []Row `json:"data"`
+}
+
+// call performs the request, closes the body, requires a 2xx status and
+// decodes the envelope. A missing errorCode or result is an error, and a
+// non-zero errorCode returns an *cloud.APIError.
+func call[T any](do func() (*http.Response, error)) (*T, error) {
 	resp, err := do()
 	if err != nil {
 		return nil, err
@@ -65,130 +77,85 @@ func call[T any](do func() (*http.Response, error), codeOf func(*T) (*int32, *st
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, fmt.Errorf("omada: unexpected HTTP status %d", resp.StatusCode)
 	}
-	var env T
+	var env envelope[T]
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	code, msg := codeOf(&env)
-	if code == nil {
+	if env.ErrorCode == nil {
 		return nil, fmt.Errorf("omada: response has no errorCode")
 	}
-	if *code != 0 {
-		m := ""
-		if msg != nil {
-			m = *msg
+	if *env.ErrorCode != 0 {
+		msg := ""
+		if env.Msg != nil {
+			msg = *env.Msg
 		}
-		return nil, cloud.NewAPIError(int(*code), m)
+		return nil, cloud.NewAPIError(int(*env.ErrorCode), msg)
 	}
-	return &env, nil
+	if env.Result == nil {
+		return nil, fmt.Errorf("omada: response has no result")
+	}
+	return env.Result, nil
 }
 
-func deref[T any](p *[]T) []T {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func total(p *int64) int64 {
-	if p == nil {
-		return 0
-	}
-	return *p
+// list collects every page of a paged operation, up to maxRows.
+func list[Row any](ctx context.Context, fetch func(ctx context.Context, page, size int32) (*http.Response, error)) ([]Row, error) {
+	return cloud.CollectAll(ctx, func(ctx context.Context, page, size int) (cloud.Page[Row], error) {
+		g, err := call[grid[Row]](func() (*http.Response, error) {
+			return fetch(ctx, int32(page), int32(size))
+		})
+		if err != nil {
+			return cloud.Page[Row]{}, err
+		}
+		return cloud.Page[Row]{Rows: g.Data, TotalRows: g.TotalRows}, nil
+	}, pageSize, maxRows)
 }
 
 // ControllerStatus returns the controller status.
 func (c *Client) ControllerStatus(ctx context.Context) (user.ControllerStatus, error) {
-	env, err := call(func() (*http.Response, error) {
+	st, err := call[user.ControllerStatus](func() (*http.Response, error) {
 		return c.cl.Users().GetControllerStatus(ctx, c.omadacID)
-	}, func(e *user.OperationResponseControllerStatus) (*int32, *string) { return e.ErrorCode, e.Msg })
+	})
 	if err != nil {
 		return user.ControllerStatus{}, err
 	}
-	if env.Result == nil {
-		return user.ControllerStatus{}, fmt.Errorf("omada: controller status response has no result")
-	}
-	return *env.Result, nil
+	return *st, nil
 }
 
 // Sites returns all sites.
 func (c *Client) Sites(ctx context.Context) ([]site.SiteSummaryInfo, error) {
-	return cloud.CollectAll(ctx, func(ctx context.Context, page, size int) (cloud.Page[site.SiteSummaryInfo], error) {
-		env, err := call(func() (*http.Response, error) {
-			return c.cl.Site().GetSiteList(ctx, c.omadacID, &site.GetSiteListParams{Page: int32(page), PageSize: int32(size)})
-		}, func(e *site.OperationResponseGridVOSiteSummaryInfo) (*int32, *string) { return e.ErrorCode, e.Msg })
-		if err != nil {
-			return cloud.Page[site.SiteSummaryInfo]{}, err
-		}
-		if env.Result == nil {
-			return cloud.Page[site.SiteSummaryInfo]{}, fmt.Errorf("omada: list response has no result")
-		}
-		return cloud.Page[site.SiteSummaryInfo]{Rows: deref(env.Result.Data), TotalRows: total(env.Result.TotalRows)}, nil
-	}, pageSize, maxRows)
+	return list[site.SiteSummaryInfo](ctx, func(ctx context.Context, page, size int32) (*http.Response, error) {
+		return c.cl.Site().GetSiteList(ctx, c.omadacID, &site.GetSiteListParams{Page: page, PageSize: size})
+	})
 }
 
 // Devices returns all devices of a site.
 func (c *Client) Devices(ctx context.Context, siteID string) ([]device.DeviceInfo, error) {
-	return cloud.CollectAll(ctx, func(ctx context.Context, page, size int) (cloud.Page[device.DeviceInfo], error) {
-		env, err := call(func() (*http.Response, error) {
-			return c.cl.Devices().GetDeviceList(ctx, c.omadacID, siteID, &device.GetDeviceListParams{Page: int32(page), PageSize: int32(size)})
-		}, func(e *device.OperationResponseGridVODeviceInfo) (*int32, *string) { return e.ErrorCode, e.Msg })
-		if err != nil {
-			return cloud.Page[device.DeviceInfo]{}, err
-		}
-		if env.Result == nil {
-			return cloud.Page[device.DeviceInfo]{}, fmt.Errorf("omada: list response has no result")
-		}
-		return cloud.Page[device.DeviceInfo]{Rows: deref(env.Result.Data), TotalRows: total(env.Result.TotalRows)}, nil
-	}, pageSize, maxRows)
+	return list[device.DeviceInfo](ctx, func(ctx context.Context, page, size int32) (*http.Response, error) {
+		return c.cl.Devices().GetDeviceList(ctx, c.omadacID, siteID, &device.GetDeviceListParams{Page: page, PageSize: size})
+	})
 }
 
 // Ports returns the port counters of all switches of a site.
 func (c *Client) Ports(ctx context.Context, siteID string) ([]switchpkg.OswPortsSettingCountersVO, error) {
-	return cloud.CollectAll(ctx, func(ctx context.Context, page, size int) (cloud.Page[switchpkg.OswPortsSettingCountersVO], error) {
-		env, err := call(func() (*http.Response, error) {
-			return c.cl.Switch().GetGridSwitchesPortsCounters(ctx, c.omadacID, siteID, &switchpkg.GetGridSwitchesPortsCountersParams{Page: int32(page), PageSize: int32(size)})
-		}, func(e *switchpkg.OperationResponseGridVOOswPortsSettingCountersVO) (*int32, *string) {
-			return e.ErrorCode, e.Msg
-		})
-		if err != nil {
-			return cloud.Page[switchpkg.OswPortsSettingCountersVO]{}, err
-		}
-		if env.Result == nil {
-			return cloud.Page[switchpkg.OswPortsSettingCountersVO]{}, fmt.Errorf("omada: list response has no result")
-		}
-		return cloud.Page[switchpkg.OswPortsSettingCountersVO]{Rows: deref(env.Result.Data), TotalRows: total(env.Result.TotalRows)}, nil
-	}, pageSize, maxRows)
+	return list[switchpkg.OswPortsSettingCountersVO](ctx, func(ctx context.Context, page, size int32) (*http.Response, error) {
+		return c.cl.Switch().GetGridSwitchesPortsCounters(ctx, c.omadacID, siteID, &switchpkg.GetGridSwitchesPortsCountersParams{Page: page, PageSize: size})
+	})
 }
 
 // Clients returns the active clients of a site, at most 5000.
 func (c *Client) Clients(ctx context.Context, siteID string) ([]client.OpenApiClientInfo, error) {
-	return cloud.CollectAll(ctx, func(ctx context.Context, page, size int) (cloud.Page[client.OpenApiClientInfo], error) {
-		env, err := call(func() (*http.Response, error) {
-			return c.cl.Clients().GetGridActiveClients(ctx, c.omadacID, siteID, &client.GetGridActiveClientsParams{Page: int32(page), PageSize: int32(size)})
-		}, func(e *client.OperationResponseClientGridVOOpenApiClientInfo) (*int32, *string) {
-			return e.ErrorCode, e.Msg
-		})
-		if err != nil {
-			return cloud.Page[client.OpenApiClientInfo]{}, err
-		}
-		if env.Result == nil {
-			return cloud.Page[client.OpenApiClientInfo]{}, fmt.Errorf("omada: list response has no result")
-		}
-		return cloud.Page[client.OpenApiClientInfo]{Rows: deref(env.Result.Data), TotalRows: total(env.Result.TotalRows)}, nil
-	}, pageSize, maxRows)
+	return list[client.OpenApiClientInfo](ctx, func(ctx context.Context, page, size int32) (*http.Response, error) {
+		return c.cl.Clients().GetGridActiveClients(ctx, c.omadacID, siteID, &client.GetGridActiveClientsParams{Page: page, PageSize: size})
+	})
 }
 
 // Firmware returns the firmware info of one device.
 func (c *Client) Firmware(ctx context.Context, siteID, mac string) (device.DeviceFirmwareInfo, error) {
-	env, err := call(func() (*http.Response, error) {
+	fw, err := call[device.DeviceFirmwareInfo](func() (*http.Response, error) {
 		return c.cl.Devices().GetFirmwareInfo(ctx, c.omadacID, siteID, mac)
-	}, func(e *device.OperationResponseDeviceFirmwareInfo) (*int32, *string) { return e.ErrorCode, e.Msg })
+	})
 	if err != nil {
 		return device.DeviceFirmwareInfo{}, err
 	}
-	if env.Result == nil {
-		return device.DeviceFirmwareInfo{}, fmt.Errorf("omada: firmware response has no result")
-	}
-	return *env.Result, nil
+	return *fw, nil
 }

@@ -4,6 +4,7 @@ package collector
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,23 +63,21 @@ type Collector struct {
 
 	snap atomic.Pointer[snapshot.Snapshot]
 
-	pollMu sync.Mutex // serialises PollOnce calls
-	fwMu   sync.Mutex // serialises firmware passes
-	// fwFirstDone is set once a firmware pass has run against a snapshot.
-	fwFirstDone atomic.Bool
+	ready chan struct{} // closed when the first snapshot is published
 
-	mu         sync.Mutex // guards the fields below
+	pollMu     sync.Mutex // serialises PollOnce and guards controller and sites
 	controller *snapshot.Controller
-	order      []string
-	sites      map[string]*siteState
-	firmware   map[string]*bool // by device MAC
+	sites      []*siteState
+
+	mu       sync.Mutex       // guards firmware
+	firmware map[string]*bool // by device MAC
 }
 
 // New builds a Collector.
 func New(api API, rec Recorder, log *slog.Logger, opts Options) *Collector {
 	return &Collector{
 		api: api, rec: rec, log: log, opts: opts,
-		sites:    map[string]*siteState{},
+		ready:    make(chan struct{}),
 		firmware: map[string]*bool{},
 	}
 }
@@ -114,102 +113,93 @@ func (c *Collector) PollOnce(ctx context.Context) {
 	start := time.Now()
 	defer func() { c.rec.PollDuration(time.Since(start)) }()
 
-	var ctrl *snapshot.Controller
 	if st, err := timed(c, ctx, c.api.ControllerStatus); err != nil {
 		c.fail(ctx, "controller", err)
 	} else {
 		m := mapController(st)
-		ctrl = &m
+		c.controller = &m
 	}
 
 	list, err := timed(c, ctx, c.api.Sites)
 	if err != nil {
 		c.fail(ctx, "sites", err)
-		c.mu.Lock()
-		if ctrl != nil {
-			c.controller = ctrl
-		}
-		c.mu.Unlock()
 		return
 	}
 
-	c.mu.Lock()
-	prev := c.sites
-	c.mu.Unlock()
-
-	next := make(map[string]*siteState, len(list))
-	order := make([]string, 0, len(list))
+	prev := make(map[string]*siteState, len(c.sites))
+	for _, st := range c.sites {
+		prev[st.id] = st
+	}
+	seen := make(map[string]bool, len(list))
+	next := make([]*siteState, 0, len(list))
 	for _, s := range list {
-		id, name := str(s.SiteId), str(s.Name)
-		if _, dup := next[id]; dup {
+		id := str(s.SiteId)
+		if seen[id] {
 			continue
 		}
-		st := &siteState{id: id, name: name}
-		if p := prev[id]; p != nil {
-			*st = *p
-			st.name = name
+		seen[id] = true
+		st := prev[id]
+		if st == nil {
+			st = &siteState{id: id}
 		}
+		st.name = str(s.Name)
 		c.pollSite(ctx, st)
-		next[id] = st
-		order = append(order, id)
+		next = append(next, st)
 	}
-
-	c.mu.Lock()
-	if ctrl != nil {
-		c.controller = ctrl
-	}
-	c.sites, c.order = next, order
-	c.publishLocked()
-	c.mu.Unlock()
+	c.sites = next
+	c.publish()
 }
 
 // pollSite refreshes each section of st; a failed section keeps its old data.
 func (c *Collector) pollSite(ctx context.Context, st *siteState) {
-	attrs := []any{"site", st.id}
-	if devs, err := timed(c, ctx, func(ctx context.Context) ([]device.DeviceInfo, error) { return c.api.Devices(ctx, st.id) }); err != nil {
-		c.fail(ctx, "devices", err, attrs...)
-	} else {
-		st.devices = make([]snapshot.Device, len(devs))
-		for i, d := range devs {
-			st.devices[i] = mapDevice(d)
-		}
+	refresh(c, ctx, "devices", st.id, c.api.Devices, mapAll(mapDevice), &st.devices)
+	refresh(c, ctx, "ports", st.id, c.api.Ports, mapPorts, &st.ports)
+	refresh(c, ctx, "clients", st.id, c.api.Clients, mapAll(mapClient), &st.clients)
+}
+
+// refresh fetches one section of a site and replaces *dst on success.
+func refresh[R, S any](c *Collector, ctx context.Context, section, siteID string,
+	fetch func(context.Context, string) ([]R, error), convert func([]R) []S, dst *[]S) {
+	rows, err := timed(c, ctx, func(ctx context.Context) ([]R, error) { return fetch(ctx, siteID) })
+	if err != nil {
+		c.fail(ctx, section, err, "site", siteID)
+		return
 	}
-	if ports, err := timed(c, ctx, func(ctx context.Context) ([]switchpkg.OswPortsSettingCountersVO, error) {
-		return c.api.Ports(ctx, st.id)
-	}); err != nil {
-		c.fail(ctx, "ports", err, attrs...)
-	} else {
-		st.ports = make([]snapshot.Port, 0, len(ports))
-		for _, p := range ports {
-			if p.Port == nil {
-				continue
-			}
-			st.ports = append(st.ports, mapPort(p))
+	*dst = convert(rows)
+}
+
+// mapAll lifts a row mapper to a slice mapper.
+func mapAll[R, S any](f func(R) S) func([]R) []S {
+	return func(rows []R) []S {
+		out := make([]S, len(rows))
+		for i, r := range rows {
+			out[i] = f(r)
 		}
-	}
-	if cls, err := timed(c, ctx, func(ctx context.Context) ([]client.OpenApiClientInfo, error) { return c.api.Clients(ctx, st.id) }); err != nil {
-		c.fail(ctx, "clients", err, attrs...)
-	} else {
-		st.clients = make([]snapshot.Client, len(cls))
-		for i, cl := range cls {
-			st.clients[i] = mapClient(cl)
-		}
+		return out
 	}
 }
 
-// publishLocked builds a fresh snapshot from the current state. It copies
-// every slice, so published snapshots are never mutated. c.mu must be held.
-func (c *Collector) publishLocked() {
-	out := &snapshot.Snapshot{Sites: make([]snapshot.Site, 0, len(c.order))}
-	if c.controller != nil {
-		ctrl := *c.controller
-		ctrl.Storage = append([]snapshot.Storage(nil), ctrl.Storage...)
-		out.Controller = &ctrl
+// mapPorts maps port rows and drops rows without a port number.
+func mapPorts(rows []switchpkg.OswPortsSettingCountersVO) []snapshot.Port {
+	out := make([]snapshot.Port, 0, len(rows))
+	for _, p := range rows {
+		if p.Port != nil {
+			out = append(out, mapPort(p))
+		}
 	}
+	return out
+}
+
+// publish builds and stores a snapshot from the current state. c.pollMu must
+// be held. Section slices are replaced on each poll and never modified, so the
+// snapshot shares them. Only devices are copied, to merge firmware results.
+func (c *Collector) publish() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := &snapshot.Snapshot{Controller: c.controller, Sites: make([]snapshot.Site, 0, len(c.sites))}
 	seen := map[string]bool{}
-	for _, id := range c.order {
-		st := c.sites[id]
-		devs := append([]snapshot.Device(nil), st.devices...)
+	for _, st := range c.sites {
+		devs := slices.Clone(st.devices)
 		for i := range devs {
 			seen[devs[i].MAC] = true
 			if u, ok := c.firmware[devs[i].MAC]; ok {
@@ -217,9 +207,7 @@ func (c *Collector) publishLocked() {
 			}
 		}
 		out.Sites = append(out.Sites, snapshot.Site{
-			ID: st.id, Name: st.name, Devices: devs,
-			Ports:   append([]snapshot.Port(nil), st.ports...),
-			Clients: append([]snapshot.Client(nil), st.clients...),
+			ID: st.id, Name: st.name, Devices: devs, Ports: st.ports, Clients: st.clients,
 		})
 	}
 	for mac := range c.firmware {
@@ -227,27 +215,19 @@ func (c *Collector) publishLocked() {
 			delete(c.firmware, mac)
 		}
 	}
-	c.snap.Store(out)
+	if c.snap.Swap(out) == nil {
+		close(c.ready)
+	}
 }
 
 // PollFirmware fetches firmware info for every device of the current
 // snapshot, waiting FirmwareDelay between calls. It does nothing before the
 // first successful poll.
-func (c *Collector) PollFirmware(ctx context.Context) { c.pollFirmware(ctx, false) }
-
-// pollFirmware runs one firmware pass. With onlyFirst it does nothing once a
-// first pass has run, so a retry from the main loop never repeats the pass.
-func (c *Collector) pollFirmware(ctx context.Context, onlyFirst bool) {
-	c.fwMu.Lock()
-	defer c.fwMu.Unlock()
-	if onlyFirst && c.fwFirstDone.Load() {
-		return
-	}
+func (c *Collector) PollFirmware(ctx context.Context) {
 	snap := c.Snapshot()
 	if snap == nil {
 		return
 	}
-	c.fwFirstDone.Store(true)
 	type target struct{ site, mac string }
 	var targets []target
 	for _, s := range snap.Sites {
@@ -291,21 +271,19 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// Run polls until ctx is cancelled. It polls once, then runs the main and
-// firmware loops; each loop works inline so a poll never overlaps itself.
+// Run polls until ctx is cancelled. Each loop works inline, so a poll never
+// overlaps itself. The first firmware pass starts after the first snapshot.
 func (c *Collector) Run(ctx context.Context) error {
 	c.PollOnce(ctx)
 	var wg sync.WaitGroup
-	loop := func(interval time.Duration, first bool, fn func(context.Context)) {
+	loop := func(interval time.Duration, first func(context.Context), fn func(context.Context)) {
 		if interval <= 0 {
 			return
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if first {
-				fn(ctx)
-			}
+			first(ctx)
 			t := time.NewTicker(interval)
 			defer t.Stop()
 			for {
@@ -318,15 +296,14 @@ func (c *Collector) Run(ctx context.Context) error {
 			}
 		}()
 	}
-	// Until the first firmware pass has run, each main poll retries it, so a
-	// failed first poll does not delay firmware data by a full interval.
-	loop(c.opts.PollInterval, false, func(ctx context.Context) {
-		c.PollOnce(ctx)
-		if c.opts.FirmwareInterval > 0 && !c.fwFirstDone.Load() && ctx.Err() == nil {
-			c.pollFirmware(ctx, true)
+	loop(c.opts.PollInterval, func(context.Context) {}, c.PollOnce)
+	loop(c.opts.FirmwareInterval, func(ctx context.Context) {
+		select {
+		case <-c.ready:
+			c.PollFirmware(ctx)
+		case <-ctx.Done():
 		}
-	})
-	loop(c.opts.FirmwareInterval, true, c.PollFirmware)
+	}, c.PollFirmware)
 	wg.Wait()
 	return nil
 }

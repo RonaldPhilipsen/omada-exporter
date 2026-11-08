@@ -198,11 +198,11 @@ func connection(wireless bool) string {
 
 // dirAttrs returns attribute options for the transmit and receive directions.
 func dirAttrs(base []attribute.KeyValue) (tx, rx metric.MeasurementOption) {
-	mk := func(dir string) metric.MeasurementOption {
-		kvs := append(append([]attribute.KeyValue(nil), base...), attribute.String("direction", dir))
-		return metric.WithAttributes(kvs...)
-	}
-	return mk("transmit"), mk("receive")
+	// WithAttributes copies its arguments, so one buffer serves both options.
+	kvs := append(base, attribute.String("direction", "transmit"))
+	tx = metric.WithAttributes(kvs...)
+	kvs[len(kvs)-1] = attribute.String("direction", "receive")
+	return tx, metric.WithAttributes(kvs...)
 }
 
 func obsI(o metric.Observer, i metric.Int64Observable, v *int64, opts ...metric.ObserveOption) {
