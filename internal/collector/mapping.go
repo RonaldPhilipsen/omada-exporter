@@ -1,8 +1,8 @@
 package collector
 
 import (
+	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/RonaldPhilipsen/omada/cloud/client"
 	"github.com/RonaldPhilipsen/omada/cloud/device"
@@ -46,7 +46,12 @@ func scaleGB(v *float64) *float64 {
 }
 
 func mapController(c user.ControllerStatus) snapshot.Controller {
-	out := snapshot.Controller{UptimeSeconds: c.UpTime, Storage: []snapshot.Storage{}}
+	out := snapshot.Controller{Storage: []snapshot.Storage{}}
+	if c.UpTime != nil {
+		// The OpenAPI specification says seconds, but controllers send milliseconds.
+		s := *c.UpTime / 1000
+		out.UptimeSeconds = &s
+	}
 	if c.HwcStorage != nil {
 		for _, d := range *c.HwcStorage {
 			out.Storage = append(out.Storage, snapshot.Storage{
@@ -143,32 +148,32 @@ func upgradeAvailable(f device.DeviceFirmwareInfo) *bool {
 	return &r
 }
 
-// parseUptime reads "<number> <unit>" pairs such as "1 day 2 hours".
+var (
+	uptimeFormat = regexp.MustCompile(`^\s*(?:\d+\s*(?:day\(s\)|days?|hours?|minutes?|seconds?|h|m|s)\s*)+$`)
+	uptimePart   = regexp.MustCompile(`(\d+)\s*(day|hour|h|minute|m|second|s)`)
+)
+
+// parseUptime reads controller uptime text such as "10day(s) 23h 51m 36s".
 func parseUptime(s string) (int64, bool) {
-	f := strings.Fields(s)
-	if len(f) == 0 || len(f)%2 != 0 {
+	if !uptimeFormat.MatchString(s) {
 		return 0, false
 	}
 	var total int64
-	for i := 0; i < len(f); i += 2 {
-		n, err := strconv.ParseInt(f[i], 10, 64)
-		if err != nil || n < 0 {
+	for _, m := range uptimePart.FindAllStringSubmatch(s, -1) {
+		n, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
 			return 0, false
 		}
-		var unit int64
-		switch strings.TrimSuffix(f[i+1], "s") {
+		switch m[2] {
 		case "day":
-			unit = 86400
-		case "hour":
-			unit = 3600
-		case "minute":
-			unit = 60
-		case "second":
-			unit = 1
+			total += n * 86400
+		case "hour", "h":
+			total += n * 3600
+		case "minute", "m":
+			total += n * 60
 		default:
-			return 0, false
+			total += n
 		}
-		total += n * unit
 	}
 	return total, true
 }
