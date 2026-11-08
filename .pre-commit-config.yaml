@@ -1,0 +1,17 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0 # pinned by `prek autoupdate`
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+
+  # gofmt must fail when `gofmt -l .` lists any file, so hook and CI gate agree.
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: bash -c 'files=$(gofmt -l .); if [ -n "$files" ]; then echo "gofmt needs formatting:"; echo "$files"; exit 1; fi'
+        language: system
+        pass_filenames: false
