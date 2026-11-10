@@ -1,6 +1,6 @@
 # Project toolchain: pinned Go + prek (pre-commit runner).
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 prek = "latest"
 
 # After mise installs the tools, wire the pre-commit hooks.
