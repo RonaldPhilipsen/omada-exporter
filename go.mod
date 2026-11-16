@@ -3,7 +3,7 @@ module github.com/RonaldPhilipsen/omada-exporter
 go 1.27.3
 
 require (
-	github.com/RonaldPhilipsen/omada v0.2.3
+	github.com/RonaldPhilipsen/omada v0.3.0
 	go.opentelemetry.io/contrib/exporters/autoexport v0.72.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/metric v1.47.0
